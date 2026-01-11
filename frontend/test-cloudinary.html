@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Cloudinary Image</title>
+</head>
+<body>
+    <h1>Cloudinary Image Test</h1>
+    
+    <h2>Test 1: Direct URL from logs</h2>
+    <img src="https://res.cloudinary.com/dtfbfbmaa/image/upload/unknown/695fed9e06268d42fbf1ab56/695fed9e06268d42fbf1ab56_1767901995433.jpg" 
+         style="max-width: 400px; border: 2px solid green;"
+         onerror="this.style.border='2px solid red'; this.alt='FAILED TO LOAD'">
+    
+    <h2>Test 2: Built from public_id</h2>
+    <img src="https://res.cloudinary.com/dtfbfbmaa/image/upload/unknown/695fed9e06268d42fbf1ab56/695fed9e06268d42fbf1ab56_1767902897742" 
+         style="max-width: 400px; border: 2px solid green;"
+         onerror="this.style.border='2px solid red'; this.alt='FAILED TO LOAD'">
+    
+    <h2>Test 3: Check API response</h2>
+    <button onclick="testAPI()">Fetch Unknown List</button>
+    <pre id="output" style="background: #f0f0f0; padding: 10px; max-height: 400px; overflow: auto;"></pre>
+    
+    <script>
+        async function testAPI() {
+            const token = localStorage.getItem('token');
+            if (!token) {
+                document.getElementById('output').textContent = 'No token found - please login first at http://localhost:5176/login';
+                return;
+            }
+            
+            try {
+                const response = await fetch('http://localhost:5001/api/unknown/list', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+                const data = await response.json();
+                document.getElementById('output').textContent = JSON.stringify(data.slice(0, 3), null, 2);
+                
+                // Show first image URL
+                if (data[0]) {
+                    const img = document.createElement('img');
+                    img.src = data[0].imageUrl || 'NO IMAGE URL';
+                    img.style.maxWidth = '400px';
+                    img.style.border = '2px solid blue';
+                    img.alt = 'First detection from API';
+                    document.body.appendChild(img);
+                }
+            } catch (e) {
+                document.getElementById('output').textContent = 'Error: ' + e.message;
+            }
+        }
+    </script>
+</body>
+</html>

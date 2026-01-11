@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 300 300">
+  <defs>
+    <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
+      <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#e5e7eb" stroke-width="0.5"/>
+    </pattern>
+  </defs>
+  <rect width="300" height="300" fill="#f3f4f6"/>
+  <rect width="300" height="300" fill="url(#grid)" />
+  <circle cx="150" cy="120" r="40" fill="#d1d5db"/>
+  <path d="M 110 180 Q 150 160 190 180" fill="none" stroke="#d1d5db" stroke-width="8" stroke-linecap="round"/>
+  <text x="150" y="250" font-family="Arial, sans-serif" font-size="14" fill="#9ca3af" text-anchor="middle">Image Placeholder</text>
+</svg>
