@@ -10,7 +10,7 @@ import random
 import cv2
 import io
 import numpy as np
-import json
+import time
 
 load_dotenv()
 
@@ -58,8 +58,9 @@ async def root():
 async def get_status():
     """Get surveillance status."""
     return {
-        "running": False,
-        "message": "Surveillance engine ready (camera dependencies not available)",
+        "running": surveillance_active,
+        "user_id": active_user_id if surveillance_active else None,
+        "message": "Surveillance engine ready with real-time face detection",
         "timestamp": datetime.now().isoformat()
     }
 
@@ -104,38 +105,16 @@ async def clear_cache(user_id: str):
 
 # ============ SURVEILLANCE CONTROL ============
 
-def create_test_frame(detection_num, test_image=None):
-    """Create a test frame when camera is unavailable."""
-    if test_image is not None:
-        # Use the test image and add detection number
-        frame = test_image.copy()
-        cv2.putText(frame, f"Test Frame #{detection_num}", (10, 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        return frame
-    else:
-        # Create a simple colored frame with text
-        img = np.zeros((480, 640, 3), dtype=np.uint8)
-        img[:] = (240, 240, 250)  # Light gray background
-        
-        cv2.putText(img, "Camera Unavailable", (150, 200), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1.5, (100, 100, 100), 3)
-        cv2.putText(img, f"Test Frame #{detection_num}", (180, 280), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (150, 150, 150), 2)
-        
-        return img
-
-async def simulate_detections(user_id: str):
-    """Capture real frames from the webcam and send to backend."""
+async def perform_surveillance(user_id: str):
+    """Perform real-time surveillance with actual face detection and recognition."""
     global surveillance_active
-
-    detection_count = 0
-
-    # Generate deterministic mock encodings per session (so cooldown works)
-    mock_people = {
-        "person_1": [random.random() for _ in range(128)],
-        "person_2": [random.random() for _ in range(128)],
-    }
-
+    
+    from face_engine import load_user_faces, detect_faces_in_frame, recognize_face
+    
+    # Load known faces for this user
+    print(f"[SURVEILLANCE] Loading known faces for user {user_id}...")
+    load_user_faces(user_id, BACKEND_URL)
+    
     # Try multiple camera indices
     cap = None
     for cam_idx in [0, 1, 2]:
@@ -173,69 +152,124 @@ async def simulate_detections(user_id: str):
                 cap.release()
             cap = None
     
-    # Load test image if camera not available
-    test_image = None
     if not cap or not cap.isOpened():
-        print("[SURVEILLANCE] ⚠️ Camera not available. Using test image fallback mode.")
-        test_image_path = "test_face.jpg"
-        if os.path.exists(test_image_path):
-            test_image = cv2.imread(test_image_path)
-            if test_image is not None:
-                print(f"[SURVEILLANCE] ✓ Loaded test image: {test_image_path}")
-
+        print("[SURVEILLANCE] ❌ No working camera found. Cannot start surveillance.")
+        surveillance_active = False
+        return
+    
+    print("[SURVEILLANCE] ✓ Camera ready. Starting face detection...")
+    
+    # Track recent detections to avoid spam (cooldown per face)
+    last_detection_time = {}
+    detection_cooldown = 10  # seconds between detections of same face
+    frame_count = 0
+    
     try:
         while surveillance_active and active_user_id == user_id:
             try:
-                detection_count += 1
-                person_key = "person_1" if detection_count % 2 == 1 else "person_2"
-
-                # Get frame from camera or fallback
-                if cap and cap.isOpened():
-                    ok, frame = cap.read()
-                    if ok and frame is not None and frame.size > 0:
-                        # Check if frame is valid (not black)
-                        mean_brightness = np.mean(frame)
-                        if mean_brightness < 10:
-                            print(f"[SURVEILLANCE] Black frame detected (brightness: {mean_brightness:.1f}), skipping...")
-                            await asyncio.sleep(0.5)
-                            continue
-                    else:
-                        print("[SURVEILLANCE] Failed to read frame, switching to fallback...")
-                        cap.release()
-                        cap = None
-                        frame = create_test_frame(detection_count, test_image)
-                else:
-                    frame = create_test_frame(detection_count, test_image)
-
-                ok, buf = cv2.imencode(".jpg", frame)
-                if not ok:
-                    print("[SURVEILLANCE] Failed to encode frame; retrying...")
+                # Read frame from camera
+                ok, frame = cap.read()
+                if not ok or frame is None or frame.size == 0:
+                    print("[SURVEILLANCE] Failed to read frame")
                     await asyncio.sleep(1)
                     continue
-
-                files = {
-                    "image": (f"frame_{detection_count}.jpg", io.BytesIO(buf.tobytes()), "image/jpeg")
-                }
-                data = {
-                    "userId": user_id,
-                    "categoryName": "Unknown Person",
-                    "faceEncoding": json.dumps(mock_people[person_key])
-                }
-
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        f"{BACKEND_URL}/api/fastapi/event",
-                        data=data,
-                        files=files,
-                        timeout=20.0
-                    )
-                    print(f"[SURVEILLANCE] Detection #{detection_count} sent: {response.status_code}")
-
-                await asyncio.sleep(5)
-
+                
+                # Check if frame is valid (not black/covered camera)
+                mean_brightness = np.mean(frame)
+                if mean_brightness < 10:
+                    # Camera is covered or too dark
+                    if frame_count % 20 == 0:  # Log every 20 frames
+                        print(f"[SURVEILLANCE] Camera appears covered (brightness: {mean_brightness:.1f})")
+                    frame_count += 1
+                    await asyncio.sleep(0.5)
+                    continue
+                
+                frame_count += 1
+                
+                # Detect faces in frame (every 3rd frame to reduce CPU load)
+                if frame_count % 3 == 0:
+                    faces = detect_faces_in_frame(frame)
+                    
+                    if faces:
+                        print(f"[SURVEILLANCE] Detected {len(faces)} face(s) in frame")
+                        
+                        for face_encoding, face_location in faces:
+                            # Recognize the face
+                            face_type, face_name = recognize_face(face_encoding, user_id, tolerance=0.6)
+                            
+                            current_time = time.time()
+                            
+                            # Determine detection key for cooldown
+                            if face_type == "family":
+                                detection_key = f"family_{face_name}"
+                            elif face_type == "category":
+                                detection_key = f"category_{face_name}"
+                            else:
+                                # Unknown face - use encoding similarity
+                                detection_key = f"unknown_{hash(tuple(face_encoding[:10]))}"
+                            
+                            # Check cooldown
+                            if detection_key in last_detection_time:
+                                time_since_last = current_time - last_detection_time[detection_key]
+                                if time_since_last < detection_cooldown:
+                                    continue  # Skip, still in cooldown
+                            
+                            # Update last detection time
+                            last_detection_time[detection_key] = current_time
+                            
+                            # Draw rectangle around face for the captured image
+                            top, right, bottom, left = face_location
+                            cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
+                            
+                            # Add label
+                            label = face_name if face_name else "Unknown"
+                            cv2.putText(frame, label, (left, top - 10), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                            
+                            # Encode frame as JPEG
+                            ok, buf = cv2.imencode(".jpg", frame)
+                            if not ok:
+                                print("[SURVEILLANCE] Failed to encode frame")
+                                continue
+                            
+                            # Prepare data to send to backend
+                            files = {
+                                "image": (f"detection_{int(current_time)}.jpg", 
+                                         io.BytesIO(buf.tobytes()), "image/jpeg")
+                            }
+                            
+                            data = {
+                                "userId": user_id,
+                                "faceEncoding": json.dumps(face_encoding.tolist())
+                            }
+                            
+                            # Add category name for unknown faces
+                            if not face_type:
+                                data["categoryName"] = "Unknown Person"
+                            elif face_type == "family":
+                                data["familyName"] = face_name
+                            elif face_type == "category":
+                                data["categoryName"] = face_name
+                            
+                            # Send to backend
+                            try:
+                                async with httpx.AsyncClient() as client:
+                                    response = await client.post(
+                                        f"{BACKEND_URL}/api/fastapi/event",
+                                        data=data,
+                                        files=files,
+                                        timeout=20.0
+                                    )
+                                    print(f"[SURVEILLANCE] Sent {face_type or 'unknown'} detection: {face_name or 'Unknown'} ({response.status_code})")
+                            except Exception as e:
+                                print(f"[SURVEILLANCE] Error sending detection: {e}")
+                
+                # Small delay between frames
+                await asyncio.sleep(0.1)
+                
             except Exception as e:
-                print(f"[SURVEILLANCE] Detection error: {e}")
-                await asyncio.sleep(5)
+                print(f"[SURVEILLANCE] Frame processing error: {e}")
+                await asyncio.sleep(1)
     
     finally:
         # Always release camera when done
@@ -263,14 +297,14 @@ async def start_surveillance(data: dict):
         # Start surveillance
         surveillance_active = True
         active_user_id = user_id
-        surveillance_task = asyncio.create_task(simulate_detections(user_id))
+        surveillance_task = asyncio.create_task(perform_surveillance(user_id))
         
         print(f"[SURVEILLANCE] Started for user {user_id}")
         
         return {
             "status": "started",
             "user_id": user_id,
-            "message": "Surveillance started (mock mode with simulated detections)",
+            "message": "Surveillance started with real-time face detection",
             "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
