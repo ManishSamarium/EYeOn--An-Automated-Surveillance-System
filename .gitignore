@@ -1,0 +1,18 @@
+.env
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+dist/
+build/
+*.egg-info/
+.idea/
+.vscode/
+
+# Added during setup
+backend/data/
+surveillance/.venv/
+backend/package-lock.json
+frontend/package-lock.json
+*.log
