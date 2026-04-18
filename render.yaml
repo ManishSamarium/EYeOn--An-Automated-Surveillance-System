@@ -1,0 +1,67 @@
+services:
+  - type: web
+    name: eyeon-backend
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: SYSTEM_TOKEN
+        generateValue: true
+      - key: FASTAPI_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: PORT
+        value: 10000
+
+  - type: web
+    name: eyeon-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false
+      - key: VITE_SOCKET_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+  # The surveillance service needs a physical webcam, which Render containers
+  # do not have. Deploy this ONLY if you are running inference on remote
+  # camera frames pushed in from elsewhere. Otherwise run it locally on a
+  # machine with a camera (laptop / Raspberry Pi / NUC) and point it at the
+  # eyeon-backend URL via NODE_BACKEND_URL.
+  - type: web
+    name: eyeon-surveillance
+    runtime: python
+    rootDir: surveillance
+    plan: standard
+    buildCommand: bash render-build.sh
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: NODE_BACKEND_URL
+        sync: false
+      - key: SYSTEM_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: MAKEFLAGS
+        value: "-j1"
+      - key: CMAKE_BUILD_PARALLEL_LEVEL
+        value: "1"
