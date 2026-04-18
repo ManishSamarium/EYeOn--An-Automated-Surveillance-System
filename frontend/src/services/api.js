@@ -2,6 +2,19 @@ import axios from 'axios';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001/api';
 
+if (
+  !import.meta.env.VITE_API_BASE_URL &&
+  typeof window !== 'undefined' &&
+  !/^(localhost|127\.|\[::1\])/.test(window.location.hostname)
+) {
+  // eslint-disable-next-line no-console
+  console.error(
+    '[EYeOn] VITE_API_BASE_URL is not set but we are not on localhost. ' +
+      'Falling back to http://localhost:5001/api which WILL FAIL in production. ' +
+      'Set VITE_API_BASE_URL in your hosting provider and rebuild.'
+  );
+}
+
 const getAuthToken = () => localStorage.getItem('token');
 
 const apiClient = axios.create({

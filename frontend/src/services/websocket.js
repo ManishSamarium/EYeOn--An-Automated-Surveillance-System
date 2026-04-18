@@ -1,6 +1,18 @@
 import io from 'socket.io-client';
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5001';
+
+if (
+  !import.meta.env.VITE_SOCKET_URL &&
+  typeof window !== 'undefined' &&
+  !/^(localhost|127\.|\[::1\])/.test(window.location.hostname)
+) {
+  // eslint-disable-next-line no-console
+  console.error(
+    '[EYeOn] VITE_SOCKET_URL is not set; websocket falls back to localhost. ' +
+      'Set VITE_SOCKET_URL on Vercel and rebuild.'
+  );
+}
 let socket = null;
 
 export const connectSocket = () => {
