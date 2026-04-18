@@ -62,7 +62,11 @@ export const surveillanceAPI = {
 export const unknownAPI = {
   listUnknowns: () => apiClient.get('/unknown/list'),
   assignToKnown: (data) => apiClient.post('/unknown/assign', data),
-  deleteUnknown: (id) => apiClient.delete(`/unknown/${id}`)
+  deleteUnknown: (id) => apiClient.delete(`/unknown/${id}`),
+  capture: (formData) =>
+    apiClient.post('/unknown/capture', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
 };
 
 export const notificationAPI = {

@@ -1,73 +1,88 @@
 # EYeOn — Smart Family Surveillance
 
-A three-service stack for real-time face-recognition surveillance using your webcam.
+Real-time family surveillance where **face recognition runs entirely in the
+visitor's browser** via `@vladmandic/face-api` (TensorFlow.js). No Python
+service, no server-side camera, no OS dependencies — open the URL, grant
+webcam permission, click Start.
+
+## Architecture
+
+```
+┌──────────────────────── Browser (visitor's machine) ────────────────────────┐
+│  • getUserMedia → webcam video                                              │
+│  • face-api.js loads models from CDN (~5 MB, cached)                        │
+│  • Fetches family/category photos from backend → computes descriptors       │
+│  • Every 1.5s: detects faces in video, matches against known descriptors    │
+│  • Family/category match → logs locally (no network call)                   │
+│  • Unknown match → uploads frame to backend + shows overlay                 │
+└───────────────────────────────────────────┬─────────────────────────────────┘
+                                            │ HTTPS
+                                            ▼
+┌──────────────────────────── Node backend (Render) ──────────────────────────┐
+│  • Auth (JWT), Mongo models, socket.io                                      │
+│  • Stores family/category/unknown photos under /data/                       │
+│  • Serves static images with permissive CORS so face-api can canvas them    │
+│  • POST /api/unknown/capture persists unknown frames + emits notifications  │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                            │
+                                            ▼
+                                ┌──────── MongoDB Atlas ─────────┐
+                                └────────────────────────────────┘
+```
 
 ## Services
 
-| Service        | Tech                       | Port | Purpose                                           |
-| -------------- | -------------------------- | ---- | ------------------------------------------------- |
-| `frontend/`    | React + Vite + Tailwind    | 5173 | Dashboard UI, live camera preview, notifications. |
-| `backend/`     | Node + Express + Socket.io | 5001 | REST API, auth, MongoDB, image storage, sockets.  |
-| `surveillance/`| Python + FastAPI + OpenCV  | 8000 | Webcam loop, face recognition, Telegram alerts.   |
+| Service     | Tech                    | Port | Purpose                                    |
+| ----------- | ----------------------- | ---- | ------------------------------------------ |
+| `frontend/` | React + Vite + face-api | 5173 | UI + browser-side face recognition         |
+| `backend/`  | Node + Express          | 5001 | Auth, storage, notifications, sockets      |
+| `surveillance/` *(optional)* | Python + FastAPI | 8000 | Legacy server-side pipeline if you prefer |
 
-## Data Flow
+The Python service is **optional** — keep it if you want to run recognition
+on a server with its own webcam (e.g. a Raspberry Pi). For web deployments
+like Render, you don't need it.
 
-```
-Browser (React)
-   │  REST /api/*               WebSocket (socket.io)
-   ▼                                         ▲
-Node backend (port 5001) ──────────────────┐ │
-   │  /api/internal/*   /api/fastapi/event │ │
-   ▼                                       │ │
-Python FastAPI (port 8000)                 │ │
-   │  webcam → face_recognition            │ │
-   └── POSTs unknown events ───────────────┘ │
-                                             │
-                Telegram bot ◄───────────────┘
-```
+## Deploying to Render (college-project friendly)
 
-- Images for family members, categories and unknown detections are stored on
-  the Node backend filesystem (`backend/data/...`) and exposed at
-  `http://localhost:5001/data/...`.
-- The Python service fetches family/category image URLs from the Node backend
-  via `/api/internal/*` using a shared `SYSTEM_TOKEN` header, encodes them with
-  `face_recognition`, then runs an OpenCV capture loop.
-- When an unknown face is seen, Python POSTs the frame to
-  `/api/fastapi/event`, which persists the image, creates a `Notification`
-  and emits a `notify:<userId>` socket event that the browser listens for.
+1. Push this repo to GitHub.
+2. On Render: **New → Blueprint** → point at the repo. It picks up
+   `render.yaml` and creates two services:
+   - `eyeon-backend` (Node web service)
+   - `eyeon-frontend` (static site)
+3. After creation, set these env vars:
+   - **eyeon-backend**
+     - `MONGODB_URI` — your Mongo Atlas SRV string
+     - `PUBLIC_BASE_URL` — `https://<backend-name>.onrender.com` (so image
+       URLs stored in DB resolve from anywhere)
+     - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` *(optional — unused in
+       browser-only mode, kept for parity)*
+   - **eyeon-frontend**
+     - `VITE_API_BASE_URL` — `https://<backend-name>.onrender.com/api`
+     - `VITE_SOCKET_URL` — `https://<backend-name>.onrender.com`
+4. Trigger the deploy. Open the frontend URL, sign up, add family photos,
+   click Surveillance → Start, allow the camera permission. Done.
 
-## Installation
+> Render's free plan has an ephemeral filesystem. Uploaded photos under
+> `backend/data/` survive until the service restarts, which on free plan
+> happens on redeploy and after ~15 min of inactivity. Fine for a college
+> demo. For persistence, add a Render disk or swap to S3-compatible storage.
 
-### Prerequisites
-- Node.js 18+
-- Python 3.10+
-- MongoDB connection (Atlas or local)
-- Webcam
-- Optional: Telegram bot token + chat id
+## Local development
 
-### Backend (Node)
 ```bash
+# 1. Backend
 cd backend
 npm install
-cp .env .env.local   # adjust values as needed
-npm run dev
-```
+cp .env.example .env       # fill in MONGODB_URI etc
+npm run dev                # http://localhost:5001
 
-### Python surveillance service
-```bash
-cd surveillance
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python main.py                   # runs uvicorn on :8000
-```
-
-### Frontend
-```bash
+# 2. Frontend
 cd frontend
 npm install
-npm run dev                      # http://localhost:5173
+npm run dev                # http://localhost:5173
 ```
+
+Open `http://localhost:5173`, sign up, and you're good.
 
 ## Environment Variables
 
@@ -76,90 +91,78 @@ npm run dev                      # http://localhost:5173
 MONGODB_URI=mongodb+srv://.../EYeOn
 JWT_SECRET=<random 64 bytes>
 PORT=5001
-FASTAPI_URL=http://127.0.0.1:8000
-SYSTEM_TOKEN=<shared secret>
 PUBLIC_BASE_URL=http://localhost:5001
 TELEGRAM_BOT_TOKEN=<optional>
 TELEGRAM_CHAT_ID=<optional>
+SYSTEM_TOKEN=<optional; only used by legacy Python service>
 ```
 
-### `surveillance/.env`
+### `frontend/.env`
 ```
-NODE_BACKEND_URL=http://127.0.0.1:5001
-SYSTEM_TOKEN=<must match backend SYSTEM_TOKEN>
-TELEGRAM_BOT_TOKEN=<optional>
-TELEGRAM_CHAT_ID=<optional>
-FAMILY_TOLERANCE=0.55
-CATEGORY_TOLERANCE=0.6
-UNKNOWN_COOLDOWN_SECONDS=30
-FRAME_SKIP=2
-CAMERA_INDEX=0
+VITE_API_BASE_URL=http://localhost:5001/api
+VITE_SOCKET_URL=http://localhost:5001
+VITE_FACE_API_MODEL_URL=https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.13/model
 ```
+
+## Browser-side recognition details
+
+- Uses `tiny_face_detector` (fast), `face_landmark_68_net` (alignment), and
+  `face_recognition_net` (128-d descriptor) — same descriptor topology as
+  dlib/FaceNet, so distance thresholds translate cleanly.
+- Default match distance: **0.5** (tighter than dlib's 0.6 because
+  TF.js-based descriptors cluster slightly differently).
+- Unknown-detection cooldown: **20 s** (so you don't spam Mongo when
+  someone lingers in frame).
+- Known-detection cooldown per identity: **60 s**.
+- Models load once per browser session and are cached by the CDN.
 
 ## API Endpoints
 
-### Public (browser)
-| Method | Path                         | Auth    | Description                       |
-| ------ | ---------------------------- | ------- | --------------------------------- |
-| POST   | `/api/auth/signup`           | —       | Create account                    |
-| POST   | `/api/auth/login`            | —       | Login, returns JWT                |
-| GET    | `/api/auth/me`               | user    | Current user                      |
-| POST   | `/api/family/add`            | user    | Upload family member photo        |
-| GET    | `/api/family/list`           | user    | List family members               |
-| DELETE | `/api/family/:id`            | user    | Delete a family member            |
-| POST   | `/api/category/add`          | user    | Create a category                 |
-| GET    | `/api/category/list`         | user    | List categories                   |
-| DELETE | `/api/category/:id`          | user    | Delete a category                 |
-| GET    | `/api/unknown/list`          | user    | List detected unknowns            |
-| POST   | `/api/unknown/assign`        | user    | Assign unknown → family/category  |
-| DELETE | `/api/unknown/:id`           | user    | Delete unknown detection          |
-| POST   | `/api/surveillance/start`    | user    | Start FastAPI camera loop         |
-| POST   | `/api/surveillance/stop`     | user    | Stop camera loop                  |
-| GET    | `/api/surveillance/status`   | user    | Query camera status               |
-| GET    | `/api/notification/list`     | user    | List notifications                |
-| POST   | `/api/notification/mark-all-read` | user | Mark all notifications read  |
-| GET    | `/api/health`                | —       | Health probe                      |
+### Public (browser, JWT)
+| Method | Path                          | Description                           |
+| ------ | ----------------------------- | ------------------------------------- |
+| POST   | `/api/auth/signup`            | Create account                        |
+| POST   | `/api/auth/login`             | Login                                 |
+| GET    | `/api/auth/me`                | Current user                          |
+| POST   | `/api/family/add`             | Upload family photo                   |
+| GET    | `/api/family/list`            | List                                  |
+| DELETE | `/api/family/:id`             | Delete                                |
+| POST   | `/api/category/add`           | Upload category photo                 |
+| GET    | `/api/category/list`          | List                                  |
+| DELETE | `/api/category/:id`           | Delete                                |
+| GET    | `/api/unknown/list`           | Detected unknowns                     |
+| POST   | `/api/unknown/capture`        | **New**: browser uploads a frame      |
+| POST   | `/api/unknown/assign`         | Assign unknown → family or category   |
+| DELETE | `/api/unknown/:id`            | Delete detection                      |
+| POST   | `/api/surveillance/start`     | Toggle server-side "running" flag     |
+| POST   | `/api/surveillance/stop`      | Toggle off                            |
+| GET    | `/api/surveillance/status`    | Running flag                          |
+| GET    | `/api/notification/list`      | Notifications                         |
+| GET    | `/api/health`                 | Health probe                          |
 
-### Internal (python ↔ node)
-| Method | Path                                | Auth          | Description              |
-| ------ | ----------------------------------- | ------------- | ------------------------ |
-| GET    | `/api/internal/family/:userId`      | system token  | Family list for Python   |
-| GET    | `/api/internal/categories/:userId`  | system token  | Categories for Python    |
-| POST   | `/api/fastapi/event`                | system token  | Unknown-face event       |
-| POST   | `/api/fastapi/category-event`       | system token  | Category match event     |
+### Internal *(legacy, used only if you run the Python service)*
+- `GET /api/internal/family/:userId` — system-token guarded
+- `GET /api/internal/categories/:userId` — system-token guarded
+- `POST /api/fastapi/event` — unknown-face event from Python
+- `POST /api/fastapi/category-event` — category match event from Python
 
-### Python (fastapi)
-| Method | Path                    | Description                    |
-| ------ | ----------------------- | ------------------------------ |
-| POST   | `/start/{user_id}`      | Start camera thread            |
-| POST   | `/stop/{user_id}`       | Stop camera thread             |
-| GET    | `/status/{user_id}`     | Running / encoding counts      |
-| POST   | `/reload/{user_id}`     | Refresh encodings from backend |
-| GET    | `/health`               | Service health                 |
-
-## WebSocket Events
-
-- `family:updated`, `category:updated` — collection changed
+## WebSocket events
 - `unknown:detected` — a new unknown was stored
 - `notify:<userId>` — user-scoped notification payload
-- `surveillance:started`, `surveillance:stopped` — FastAPI lifecycle
+- `family:updated`, `category:updated` — collection changed
+- `surveillance:started`, `surveillance:stopped` — per-user state changes
 
 ## Troubleshooting
 
-- **Camera not accessible**: confirm `CAMERA_INDEX` and that no other app is
-  using the webcam. On Linux, install `v4l-utils` and run `v4l2-ctl --list-devices`.
-- **`face_recognition` install on Windows**: see `backend/README.md` for
-  Conda / prebuilt-wheel instructions.
-- **No unknown alerts arriving**: check that `SYSTEM_TOKEN` matches in
-  `backend/.env` and `surveillance/.env`, and that the backend logs show a
-  `POST /api/fastapi/event 200` line.
-
-## Security Notes
-
-- Change `JWT_SECRET` and `SYSTEM_TOKEN` before deploying.
-- `backend/data/*` is served publicly — do not put anything sensitive there
-  that you do not intend to be accessible via the backend URL.
-- Set `PUBLIC_BASE_URL` so generated image URLs work behind a reverse proxy.
+- **"Models still loading" forever**: CDN blocked by network / ad-blocker.
+  Set `VITE_FACE_API_MODEL_URL` to a different mirror, or self-host the
+  models under `frontend/public/models/` and point the var at `/models`.
+- **Webcam preview black**: browser requires HTTPS for `getUserMedia` on
+  non-localhost origins. Render serves HTTPS by default — fine.
+- **Images don't load in the detector**: the backend must send CORS
+  headers on `/data/*`. The bundled `server.js` already does this.
+- **Family photos uploaded without a visible face** won't be indexed —
+  face-api will log a warning and skip them.
 
 ## License
 MIT

@@ -29,7 +29,15 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(cors());
 
-app.use('/data', express.static(path.join(__dirname, 'data')));
+app.use(
+  '/data',
+  (_req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    next();
+  },
+  express.static(path.join(__dirname, 'data'))
+);
 
 app.use((req, _res, next) => {
   req.io = io;

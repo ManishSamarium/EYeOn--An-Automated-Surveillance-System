@@ -1,10 +1,12 @@
 import express from 'express';
+import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import UnknownDetection from '../models/UnknownDetection.js';
 import FamilyMember from '../models/FamilyMember.js';
 import Category from '../models/Category.js';
+import Notification from '../models/Notification.js';
 import { verifyToken } from './auth.js';
 import { buildImageUrl, reloadEncodings } from '../services/fastapi.js';
 
@@ -12,6 +14,55 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const router = express.Router();
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }
+});
+
+router.post('/capture', verifyToken, upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'image required' });
+
+    const userId = String(req.user._id);
+    const userDir = path.join(__dirname, '..', 'data', 'unknown', userId);
+    fs.mkdirSync(userDir, { recursive: true });
+    const filename = `unknown_${Date.now()}.jpg`;
+    const absPath = path.join(userDir, filename);
+    fs.writeFileSync(absPath, req.file.buffer);
+
+    const relativePath = path
+      .relative(path.join(__dirname, '..'), absPath)
+      .replace(/\\/g, '/');
+    const imageUrl = buildImageUrl(req, relativePath);
+
+    const record = await UnknownDetection.create({
+      userId,
+      image_path: relativePath,
+      imageUrl,
+      timestamp: new Date()
+    });
+
+    await Notification.create({
+      userId,
+      type: 'unknown_detected',
+      message: 'Unknown person detected',
+      imageUrl
+    });
+
+    req.io?.emit(`notify:${userId}`, {
+      _id: record._id,
+      imageUrl,
+      timestamp: record.timestamp,
+      type: 'unknown_detected'
+    });
+    req.io?.emit('unknown:detected', { userId, imageUrl, timestamp: record.timestamp });
+
+    res.json({ ok: true, _id: record._id, imageUrl });
+  } catch (err) {
+    console.error('capture error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 router.get('/list', verifyToken, async (req, res) => {
   try {
